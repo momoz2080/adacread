@@ -422,6 +422,17 @@
   .tvbars i{ width:22px; height:14px; border-radius:5px; background:#E3DDEB; }
   .tvbars i.on{ background:#5BBE6E; }
   .hp.tv.won{ background:#FFF3C4; box-shadow:0 4px 0 #E3A52A, 0 0 0 4px #FFE38A; }
+  @keyframes tvBlink{ 0%,100%{ transform:scale(1); opacity:1; } 50%{ transform:scale(1.25); opacity:.25; } }
+  .hp.tv.blink{ animation:tvBlink .6s ease-in-out 3; }
+  .hp.games.won{ background:#DDF3E4; box-shadow:0 4px 0 #2E9E6A, 0 0 0 4px #BFE8CC; }
+  .gbars{ display:inline-flex; gap:3px; }
+  .gbars i{ width:11px; height:14px; border-radius:4px; background:#E3DDEB; }
+  .gbars i.on{ background:#5BBE6E; }
+  .gpick{ position:fixed; inset:0; z-index:99998; background:rgba(20,16,50,.55); display:flex; align-items:center; justify-content:center; }
+  .gpick .box{ background:#fff; border-radius:24px; padding:22px; display:flex; flex-direction:column; gap:12px; min-width:260px; max-width:90vw; }
+  .gpick h3{ margin:0 0 4px; font:800 22px 'Baloo 2',sans-serif; text-align:center; color:#2B2840; }
+  .gpick button{ border:none; border-radius:16px; padding:14px 18px; font:700 20px 'Baloo 2',sans-serif; color:#fff; cursor:pointer; }
+  .gpick button.x{ background:#EEF1F6; color:#2B2840; }
   .quest{ position:absolute; z-index:5; left:12px; bottom:calc(env(safe-area-inset-bottom, 0px) + 12px); border:none; display:flex; align-items:center; gap:10px; padding:10px 18px; border-radius:18px; background:#2E9E6A; color:#fff; font:700 19px 'Baloo 2', sans-serif; box-shadow:0 4px 0 #1F7A50; cursor:pointer; max-width:calc(100% - 24px); text-align:left; }
   .quest b{ font-weight:800; }
   .quest .ok{ background:#fff; color:#2E9E6A; border-radius:999px; padding:0 8px; font-size:15px; }
@@ -1232,6 +1243,7 @@
   // Keyed by "subjectId::subtopicId" so subjects that reuse a subtopic id
   // (both Science and Nature use 'explore') never collide with each other.
   var LS_STREAKS = 'popooshNotebook_streaks_v1';
+  var TV_NEEDED = 3, GAMES_NEEDED = 5; // finished Reading levels today: 3 unlocks TV, 5 unlocks games
   function todayStr(){
     var d = new Date();
     return d.getFullYear() + '-' + (d.getMonth()+1) + '-' + d.getDate();
@@ -1261,6 +1273,7 @@
     entry.count += 1;
     streaks[streakKey] = entry;
     saveStreaks(streaks);
+    setTimeout(function(){ try{ if(typeof refreshHud === 'function') refreshHud(); if(typeof renderSidebar === 'function') renderSidebar(); }catch(e){} }, 0);
     return cents;
   }
 
@@ -1633,8 +1646,8 @@
     }).join('');
     var ex = SUBJECTS[3];
     html += ex.subtopics.map(function(st, i){
-      return '<button class="subject-item" data-explore="'+i+'" style="background:'+st.color+'">'+
-        '<span class="sicon">'+(SUBTOPIC_ICONS[st.id]||ex.icon)+'</span>'+st.label+'</button>';
+      return '<button class="subject-item" data-explore="'+i+'" style="background:'+st.color+(gamesUnlocked() ? '' : ';opacity:.6')+'">'+
+        '<span class="sicon">'+(gamesUnlocked() ? (SUBTOPIC_ICONS[st.id]||ex.icon) : '🔒')+'</span>'+st.label+'</button>';
     }).join('');
     subjectListEl.innerHTML = html;
     subjectListEl.querySelectorAll('[data-nav-id]').forEach(function(btn){
@@ -1643,10 +1656,21 @@
     subjectListEl.querySelectorAll('[data-explore]').forEach(function(btn){
       btn.addEventListener('click', function(){
         var st = ex.subtopics[parseInt(btn.getAttribute('data-explore'),10)];
+        if(!gamesUnlocked()){ var gl = GAMES_NEEDED - levelsToday(); gamesLockedToast('🔒 Finish '+gl+' more reading level'+(gl === 1 ? '' : 's')+' today to unlock games!'); return; }
         launchApp(st.standalone, 'explore', null, 'explore::'+st.id);
       });
     });
     document.querySelector('[data-nav="home"]').onclick = showWelcomeView;
+  }
+  function gamesLockedToast(msg){
+    var el = document.getElementById('__gamesLockToast');
+    if(!el){
+      el = document.createElement('div'); el.id = '__gamesLockToast';
+      el.style.cssText = 'position:fixed;left:50%;bottom:28px;transform:translateX(-50%);background:#2B2840;color:#fff;padding:14px 22px;border-radius:999px;font:700 18px "Baloo 2",sans-serif;z-index:99999;box-shadow:0 6px 18px rgba(0,0,0,.3);transition:opacity .3s;opacity:0;pointer-events:none';
+      document.body.appendChild(el);
+    }
+    el.textContent = msg; el.style.opacity = '1';
+    clearTimeout(gamesLockedToast._t); gamesLockedToast._t = setTimeout(function(){ el.style.opacity = '0'; }, 3500);
   }
   var viewTopics = document.getElementById('view-topics');
   function goToTopicsView(navId){
@@ -2107,10 +2131,23 @@
     for(var k in st){ if(st[k] && st[k].date === t && st[k].count > 0) out[k] = true; }
     return out;
   }
-  function tvBars(){ // Reading needs 2 different topics today
-    var p = playedToday(), groups = { reading:0 };
-    for(var k in p){ var g = k.split('::')[0]; if(g in groups) groups[g]++; }
-    return ['reading'].map(function(g){ return groups[g] >= 2; });
+  /* TV time = 3 finished Reading levels today. Games (Explore apps) = 5 finished levels today. */
+  var NTFY_TOPIC = 'popoosh-adrian-tv-k7q2m9x4'; // phone app subscribes to this same name (ntfy.sh)
+  function levelsToday(){
+    var st = loadStreaks(), t = todayStr(), n = 0;
+    for(var k in st){ if(k.indexOf('reading::') === 0 && st[k] && st[k].date === t) n += st[k].count || 0; }
+    return n;
+  }
+  function gamesUnlocked(){ return levelsToday() >= GAMES_NEEDED; }
+  function tvBars(){ var n = levelsToday(); return [0,1,2].map(function(i){ return n > i; }); }
+  function tvAnnounce(){ // once per day: blink the TV 3 times and ping the parent's phone
+    var t = todayStr(), seen = null;
+    try{ seen = localStorage.getItem('popoosh_tvAlert_v1'); }catch(e){}
+    if(seen === t) return;
+    try{ localStorage.setItem('popoosh_tvAlert_v1', t); }catch(e){}
+    var tv = document.getElementById('isTv');
+    if(tv){ tv.classList.remove('blink'); void tv.offsetWidth; tv.classList.add('blink'); }
+    try{ fetch('https://ntfy.sh/' + NTFY_TOPIC, { method:'POST', headers:{ 'Title':'Adrian unlocked TV time', 'Tags':'tv,tada' }, body:'Adrian finished ' + TV_NEEDED + ' reading levels today.' }).catch(function(){}); }catch(e){}
   }
   function questToday(){
     var day = Math.floor((Date.now() - new Date().getTimezoneOffset()*60000) / 864e5);
@@ -2188,7 +2225,8 @@
       '<button class="hp" id="isCoins" aria-label="Piggy Bank"><span class="coin"></span><span id="isCoinsN">$0.00</span></button>'+
       '<button class="hp" id="isStars" aria-label="Stars, and my hut">⭐ <span id="isStarsN">0</span></button>'+
       '<button class="hp" id="isBag" aria-label="My collection">🎒</button>'+
-      '<button class="hp tv" id="isTv" aria-label="TV time">📺 <span class="tvbars" id="isTvBars"><i></i></span></button></div>'+
+      '<button class="hp tv" id="isTv" aria-label="TV time">📺 <span class="tvbars" id="isTvBars"><i></i><i></i><i></i></span></button>'+
+      '<button class="hp games" id="isGames" aria-label="Games"><span id="isGamesIcon">🔒</span> <span class="gbars" id="isGamesBars"><i></i><i></i><i></i><i></i><i></i></span></button></div>'+
     '<div class="scr" id="scrHome"></div><div class="scr" id="scrTopics"></div><div class="scr" id="scrTrail"></div><div class="scr" id="scrHut"></div><div class="scr" id="scrExplore"></div>'+
     '<div class="bubble off" id="isBubble"></div>';
   document.body.appendChild(root);
@@ -2251,6 +2289,13 @@
     var bars = tvBars(), won = bars.every(Boolean);
     document.querySelectorAll('#isTvBars i').forEach(function(el, i){ el.classList.toggle('on', bars[i]); });
     document.getElementById('isTv').classList.toggle('won', won);
+    if(won) tvAnnounce();
+    var gn = levelsToday(), gOpen = gn >= GAMES_NEEDED, gb = document.getElementById('isGames');
+    if(gb){
+      document.querySelectorAll('#isGamesBars i').forEach(function(el, i){ el.classList.toggle('on', gn > i); });
+      document.getElementById('isGamesIcon').textContent = gOpen ? '🎮' : '🔒';
+      gb.classList.toggle('won', gOpen);
+    }
   }
 
   // ---- home
@@ -2445,7 +2490,19 @@
   document.getElementById('isTv').onclick = function(){
     var bars = tvBars();
     if(bars.every(Boolean)) say('TV time earned! Go tell a grown-up!', 4000);
-    else { var need = ['Reading'].filter(function(_, i){ return !bars[i]; }); say('Play 2 different topics in '+need.join(', ')+' today for TV time!', 4500); }
+    else { var left = TV_NEEDED - levelsToday(); say('Finish '+left+' more reading level'+(left === 1 ? '' : 's')+' today for TV time!', 4500); }
+  };
+  document.getElementById('isGames').onclick = function(){
+    if(!gamesUnlocked()){ var left = GAMES_NEEDED - levelsToday(); say('Finish '+left+' more reading level'+(left === 1 ? '' : 's')+' today to unlock games!', 4500); return; }
+    var ov = document.createElement('div'); ov.className = 'gpick';
+    ov.innerHTML = '<div class="box"><h3>🎮 Pick a game!</h3>'+SUBJECTS[3].subtopics.map(function(st, i){
+      return '<button data-g="'+i+'" style="background:'+st.color+'">'+(SUBTOPIC_ICONS[st.id]||'🎮')+' '+esc2(st.label)+'</button>'; }).join('')+'<button class="x">Close</button></div>';
+    document.body.appendChild(ov);
+    ov.onclick = function(e){
+      var b = e.target.closest('button'), g = b && b.getAttribute('data-g');
+      if(g !== null && g !== undefined && b){ var st = SUBJECTS[3].subtopics[+g]; ov.remove(); launchApp(st.standalone, 'explore', null, 'explore::'+st.id); }
+      else if(b && b.className === 'x' || e.target === ov) ov.remove();
+    };
   };
   function islandRefresh(){
     refreshHud();
@@ -3933,12 +3990,15 @@ loadPiggyBank();
 //  past recordings he can browse and play back. Fully
 //  optional; nothing else in the app depends on it.
 // ═══════════════════════════════════════════════════
-let mediaRecorder = null;
-let recordedChunks = [];
+// ONE press of Record keeps the mic open across every sentence: whenever he
+// moves to another sentence the current clip is saved under its own sentence
+// and a fresh clip starts automatically. It ends when he taps Stop, finishes
+// the tab, or switches tabs.
+let recStream = null;       // live mic stream while a recording session is on
+let segRecorder = null;     // recorder for the current sentence's clip
+let segCtx = null;          // { levelLabel, sentenceText, levelIdx, sentenceIdx }
+let sessionLevelIdx = -1;   // the tab the session started in
 let isRecording = false;
-let recordingContext = null; // { levelLabel, sentenceText } captured when recording STARTS,
-                              // so saving is correct even if he's moved to a new sentence
-                              // by the time the mic actually finishes stopping
 
 // some hosting contexts (e.g. a sandboxed preview, or opening the
 // file directly instead of over https/localhost) silently swallow
@@ -3957,15 +4017,35 @@ function showToast(message, duration) {
   showToast._t = setTimeout(() => toast.classList.remove('show'), duration || 4000);
 }
 
-// stops a recording that's still in progress, if any. Every stop —
-// whether he taps Stop himself, the paw reaches the end of the
-// sentence, or he navigates away mid-recording — saves what was
-// captured so far; nothing is ever silently thrown away.
-function stopRecordingIfActive() {
-  if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-    mediaRecorder.stop();
-  }
+function startSegment() {
+  if (!recStream) return;
+  const chunks = [];
+  const ctx = { levelLabel: LEVELS[levelIdx].label, sentenceText: LEVELS[levelIdx].sentences[sentenceIdx], levelIdx: levelIdx, sentenceIdx: sentenceIdx };
+  const rec = new MediaRecorder(recStream);
+  rec.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
+  rec.onstop = () => {
+    if (chunks.length) addRecordingToLibrary(new Blob(chunks, { type: rec.mimeType || 'audio/webm' }), ctx);
+  };
+  rec.start();
+  segRecorder = rec;
+  segCtx = ctx;
 }
+
+// saves the current sentence's clip; recording a sentence counts as reading it
+function finishSegment() {
+  const rec = segRecorder, ctx = segCtx;
+  segRecorder = null;
+  segCtx = null;
+  if (rec && rec.state !== 'inactive') rec.stop();
+  if (ctx) markSentenceDone(ctx.levelIdx, ctx.sentenceIdx);
+}
+
+function endRecordingSession() {
+  finishSegment();
+  if (recStream) { recStream.getTracks().forEach(t => t.stop()); recStream = null; } // always release the mic
+  resetRecordButton();
+}
+function stopRecordingIfActive() { if (isRecording) endRecordingSession(); }
 
 function resetRecordButton() {
   isRecording = false;
@@ -3974,16 +4054,17 @@ function resetRecordButton() {
   btnRecordLabel.textContent = 'Record';
 }
 
+// called every time a sentence is shown
 function resetRecording() {
-  // if he was still recording when the sentence changed, stop the
-  // mic and save what he'd read so far — moving on shouldn't lose it
-  stopRecordingIfActive();
-  resetRecordButton();
+  if (!isRecording) return;
+  if (levelIdx !== sessionLevelIdx) { endRecordingSession(); return; } // switched tab -> stop
+  finishSegment();   // save the sentence he just left
+  startSegment();    // keep going on the new one
 }
 
 btnRecord.addEventListener('click', async () => {
   if (isRecording) {
-    stopRecordingIfActive();
+    endRecordingSession();
     return;
   }
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
@@ -3995,32 +4076,17 @@ btnRecord.addEventListener('click', async () => {
     return;
   }
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    recordedChunks = [];
-    // capture which sentence this recording belongs to right now,
-    // before anything about the current sentence can change
-    recordingContext = { levelLabel: LEVELS[levelIdx].label, sentenceText: LEVELS[levelIdx].sentences[sentenceIdx] };
-    mediaRecorder = new MediaRecorder(stream);
-    mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) recordedChunks.push(e.data); };
-    mediaRecorder.onstop = () => {
-      stream.getTracks().forEach(t => t.stop()); // always release the mic
-      resetRecordButton();
-
-      const chunks = recordedChunks;
-      const context = recordingContext;
-      recordedChunks = [];
-      recordingContext = null;
-      if (chunks.length === 0 || !context) return;
-
-      const blob = new Blob(chunks, { type: 'audio/webm' });
-      addRecordingToLibrary(blob, context);
-    };
-    mediaRecorder.start();
+    recStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    sessionLevelIdx = levelIdx;
     isRecording = true;
     btnRecord.classList.add('recording');
     btnRecord.textContent = '⏹️';
     btnRecordLabel.textContent = 'Stop';
+    startSegment();
+    showToast('Recording every sentence in this tab — tap ⏹️ when you are done!', 3500);
   } catch (err) {
+    if (recStream) { recStream.getTracks().forEach(t => t.stop()); recStream = null; }
+    resetRecordButton();
     if (err && err.name === 'NotAllowedError') {
       showToast("Microphone access was blocked — recording is optional, so no worries, keep reading!");
     } else {
@@ -4032,7 +4098,7 @@ btnRecord.addEventListener('click', async () => {
 // ── recordings library — every recording is kept (not just the
 //    last one), so "My Recordings" can browse and replay any of them
 const RECORDINGS_KEY = 'popoosh-reading-ladder-recordings';
-const MAX_RECORDINGS = 20; // keeps saved storage well under the size limit
+const MAX_RECORDINGS = 40; // keeps saved storage well under the size limit (one clip per sentence now)
 let recordingsLibrary = [];
 
 const recOverlay = document.getElementById('rec-overlay');
@@ -4069,7 +4135,7 @@ async function addRecordingToLibrary(blob, context) {
       audioDataUrl,
     });
     if (recordingsLibrary.length > MAX_RECORDINGS) recordingsLibrary.length = MAX_RECORDINGS;
-    showToast('Got it! Tap "My Recordings" to hear it back.');
+    if (!recStream) showToast('Got it! Tap "My Recordings" to hear it back.');
     saveRecordingsToStorage();
   } catch (e) {
     showToast("Couldn't save that recording — no worries, keep reading!");
@@ -4143,6 +4209,13 @@ function renderTabs() {
 // ═══════════════════════════════════════════════════
 //  RENDER CURRENT SENTENCE
 // ═══════════════════════════════════════════════════
+function refreshDots() {
+  const level = LEVELS[levelIdx];
+  dotRowEl.innerHTML = level.sentences.map((_, i) =>
+    `<div class="dot ${levelSentencesDone[levelIdx].has(i) ? 'done' : ''} ${i === sentenceIdx ? 'current' : ''}"></div>`
+  ).join('');
+}
+
 function renderSentence() {
   stopSpeech();
   sentencePlaying = false;
@@ -4157,9 +4230,7 @@ function renderSentence() {
   wordsRowEl.id = 'words-row';
 
   counterEl.textContent = `Sentence ${sentenceIdx + 1} of ${level.sentences.length}`;
-  dotRowEl.innerHTML = level.sentences.map((_, i) =>
-    `<div class="dot ${levelSentencesDone[levelIdx].has(i) ? 'done' : ''} ${i === sentenceIdx ? 'current' : ''}"></div>`
-  ).join('');
+  refreshDots();
 
   btnPrev.disabled = sentenceIdx === 0;
   btnNext.textContent = sentenceIdx === level.sentences.length - 1 ? 'Finish tab ▶' : 'Next ▶';
@@ -4169,6 +4240,16 @@ function renderSentence() {
   // one-time "try the paw first" nudge for this sentence.
   sentenceShownAt = Date.now();
   nextNudgeShown = false;
+
+  // a sentence counts as read once he has stayed on it for 2 seconds (or recorded it)
+  clearTimeout(sentenceTimer);
+  const timerLevel = levelIdx, timerSentence = sentenceIdx;
+  sentenceTimer = setTimeout(() => {
+    if (levelIdx !== timerLevel || sentenceIdx !== timerSentence) return;
+    markSentenceDone(timerLevel, timerSentence);
+    if (timerSentence !== LEVELS[timerLevel].sentences.length - 1) checkTabComplete();
+    else if (!levelsFullyDone.has(timerLevel) && levelSentencesDone[timerLevel].size >= LEVELS[timerLevel].sentences.length) showToast('⭐ Nice! Tap "Finish tab" to finish this tab.');
+  }, SENTENCE_DONE_MS);
 
   attachScrub(sentence);
   resizeDrawCanvas();
@@ -4186,6 +4267,8 @@ function renderSentence() {
 // needs well more than this per word).
 let sentenceShownAt = Date.now();
 let nextNudgeShown = false;
+let sentenceTimer = null;
+const SENTENCE_DONE_MS = 2000; // staying 2 seconds on a sentence counts as reading it
 const MIN_MS_PER_WORD = 350;
 const MIN_TOTAL_MS = 1200;
 function minDwellMsFor(wordCount) {
@@ -4235,16 +4318,6 @@ function attachScrub(sentenceText) {
         speakWord(words[wordIdx]);
       }
 
-      if (navIdx === safeNavCount - 1) {
-        const requiredMs = minDwellMsFor(words.length);
-        const elapsedMs = Date.now() - sentenceShownAt;
-        if (elapsedMs >= requiredMs) {
-          onSentenceFullyExplored();
-        } else if (!levelSentencesDone[levelIdx].has(sentenceIdx)) {
-          showToast('Whoa, speedy paw! 🐾 Try dragging it a little slower to earn your star.');
-        }
-        if (isRecording) stopRecordingIfActive();
-      }
     }
   }
 
@@ -4264,16 +4337,21 @@ function attachScrub(sentenceText) {
 // ═══════════════════════════════════════════════════
 //  COMPLETION — sentence -> tab -> whole phase
 // ═══════════════════════════════════════════════════
-function onSentenceFullyExplored() {
-  if (levelSentencesDone[levelIdx].has(sentenceIdx)) return;
-  levelSentencesDone[levelIdx].add(sentenceIdx);
+function markSentenceDone(l, sIdx) {
+  if (levelSentencesDone[l].has(sIdx)) return;
+  levelSentencesDone[l].add(sIdx);
   awardStars(1);
+  if (l === levelIdx) refreshDots();
+}
 
+// finishes the tab once every sentence is done; returns true if it just finished
+function checkTabComplete() {
   const level = LEVELS[levelIdx];
   if (levelSentencesDone[levelIdx].size >= level.sentences.length && !levelsFullyDone.has(levelIdx)) {
     levelsFullyDone.add(levelIdx);
     addCoin(5, `"${level.label}" tab finished`);
     renderTabs();
+    endRecordingSession();
 
     if (levelsFullyDone.size >= LEVELS.length) {
       addCoin(25, 'Finished all of Phase 1!');
@@ -4281,7 +4359,9 @@ function onSentenceFullyExplored() {
     } else {
       showDone('🎉', `${level.label} tab done!`, 'Pick another tab, or tap Keep going for the next one.', false);
     }
+    return true;
   }
+  return false;
 }
 
 function showDone(trophy, title, sub, bigCelebration) {
@@ -4318,10 +4398,13 @@ document.getElementById('replay-btn').addEventListener('click', () => {
 // ═══════════════════════════════════════════════════
 function goNext() {
   const level = LEVELS[levelIdx];
-  if (!levelSentencesDone[levelIdx].has(sentenceIdx) && !nextNudgeShown) {
+  if (Date.now() - sentenceShownAt >= SENTENCE_DONE_MS || isRecording) {
+    markSentenceDone(levelIdx, sentenceIdx);
+  } else if (!levelSentencesDone[levelIdx].has(sentenceIdx) && !nextNudgeShown) {
     nextNudgeShown = true;
-    showToast('🐾 Drag the paw across the sentence first to read it and earn a star!');
+    showToast('🐾 Stay on each sentence for 2 seconds (or record it) to earn a star!');
   }
+  if (sentenceIdx === level.sentences.length - 1 && checkTabComplete()) return;
   if (sentenceIdx < level.sentences.length - 1) {
     sentenceIdx++;
     renderSentence();
